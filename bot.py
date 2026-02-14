@@ -567,14 +567,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     
     try:
         with driver.session() as session:
-            # Get overall stats
+            # Get overall stats - fixed query
             overall_query = """
             MATCH (t:Ticket)
-            WITH count(t) as total
-            MATCH (open:Ticket {status: 'Open'})
-            WITH total, count(open) as open_count
-            MATCH (closed:Ticket {status: 'Closed'})
-            RETURN total, open_count, count(closed) as closed_count
+            RETURN count(t) as total,
+                   count(CASE WHEN t.status = 'Open' THEN 1 END) as open_count,
+                   count(CASE WHEN t.status = 'Closed' THEN 1 END) as closed_count
             """
             overall = session.run(overall_query).single()
             total = overall['total'] if overall else 0
