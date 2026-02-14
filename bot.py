@@ -38,6 +38,28 @@ FEATURES = ["Stop List", "GPA", "Coursework", "Planner", "Others"]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the conversation and asks the user what they want to do."""
+    user = update.message.from_user
+    
+    # Save/update user in database
+    driver = get_db_driver()
+    try:
+        with driver.session() as session:
+            session.run("""
+                MERGE (u:User {telegram_id: $user_id})
+                ON CREATE SET u.username = $username, u.first_name = $first_name, u.created_at = $created_at
+                SET u.last_activity = $last_activity
+            """, 
+                user_id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                created_at=datetime.now().isoformat(),
+                last_activity=datetime.now().isoformat()
+            )
+    except Exception as e:
+        logger.error(f"Error saving user: {e}")
+    finally:
+        driver.close()
+    
     reply_keyboard = [["Report a Bug", "View Open Tickets"]]
     await update.message.reply_text(
         "Welcome to the ZC Toolbox Support Bot! 🛠️\n"
@@ -75,25 +97,52 @@ async def view_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
 
     driver = get_db_driver()
-    query = """
+    
+    # Get total and open count
+    stats_query = """
+    MATCH (t:Ticket)
+    WITH count(t) as total
+    MATCH (open:Ticket {status: 'Open'})
+    RETURN total, count(open) as open_count
+    """
+    
+    # Get open tickets
+    tickets_query = """
     MATCH (t:Ticket {status: 'Open'})
-    RETURN t.feature AS feature, t.course_code AS course_code, t.description AS description, t.created_at AS created_at
+    OPTIONAL MATCH (u:User)-[:REPORTED]->(t)
+    RETURN t.feature AS feature, t.course_code AS course_code, 
+           t.description AS description, t.created_at AS created_at,
+           u.username AS username
     ORDER BY t.created_at DESC
     LIMIT 10
     """
+    
     try:
         with driver.session() as session:
-            result = session.run(query)
+            # Get stats
+            stats_result = session.run(stats_query)
+            stats = stats_result.single()
+            total = stats['total'] if stats else 0
+            open_count = stats['open_count'] if stats else 0
+            
+            # Get tickets
+            result = session.run(tickets_query)
             tickets = [record.data() for record in result]
             
         if not tickets:
-            await update.message.reply_text("🎉 No open tickets found! Everything seems to be working smoothly.")
+            await update.message.reply_text(
+                f"🎉 No open tickets found! Everything seems to be working smoothly.\n\n"
+                f"📊 Stats: {total} total tickets, {open_count} open"
+            )
         else:
-            response = "📋 **Open Tickets:**\n\n"
+            response = f"📋 *Open Tickets* ({len(tickets)} of {open_count}):\n\n"
             for t in tickets:
-                date_str = t['created_at'].split("T")[0] if t['created_at'] else "N/A"
-                course = f" [{t['course_code']}]" if t['course_code'] else ""
-                response += f"🔹 *{t['feature']}*{course}: {t['description']} \n_{date_str}_\n\n"
+                date_str = t['created_at'].split("T")[0] if t.get('created_at') else "N/A"
+                course = f" [{t['course_code']}]" if t.get('course_code') else ""
+                username = t.get('username', 'Unknown')
+                response += f"🔹 *{t['feature']}*{course}\n"
+                response += f"   {t['description']}\n"
+                response += f"   _By @{username} on {date_str}_\n\n"
             
             await update.message.reply_text(response, parse_mode='Markdown')
             
@@ -113,16 +162,17 @@ async def select_feature(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if feature == "Planner":
         await update.message.reply_text(
             "Please describe the issue in the following format:\n\n"
-            "Line 1: **Course Code** (e.g., CSEN101)\n"
-            "Line 2+: **Description of the problem**\n\n"
+            "Line 1: *Course Code* (e.g., CSEN101)\n"
+            "Line 2+: *Description of the problem*\n\n"
             "Example:\n"
             "CSEN102\n"
             "The prerequisites shown are incorrect.",
             reply_markup=ReplyKeyboardRemove(),
+            parse_mode='Markdown'
         )
     else:
         await update.message.reply_text(
-            f"Please describe the bug you found in **{feature}**.",
+            f"Please describe the bug you found in *{feature}*.",
             reply_markup=ReplyKeyboardRemove(),
             parse_mode='Markdown'
         )
@@ -155,9 +205,11 @@ async def input_issue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     
     # Save to Neo4j
     driver = get_db_driver()
+    ticket_id = str(uuid.uuid4())
     query = """
     MERGE (u:User {telegram_id: $user_id})
-    ON CREATE SET u.username = $username, u.first_name = $first_name
+    ON CREATE SET u.username = $username, u.first_name = $first_name, u.created_at = $created_at
+    SET u.last_activity = $last_activity
     CREATE (t:Ticket {
         id: $ticket_id,
         feature: $feature,
@@ -175,13 +227,18 @@ async def input_issue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
                         user_id=user.id, 
                         username=user.username, 
                         first_name=user.first_name,
-                        ticket_id=str(uuid.uuid4()),
+                        ticket_id=ticket_id,
                         feature=feature,
                         course_code=course_code,
                         description=description,
-                        created_at=datetime.isoformat(datetime.now())
+                        created_at=datetime.now().isoformat(),
+                        last_activity=datetime.now().isoformat()
             )
-        await update.message.reply_text("✅ Ticket created successfully! Thank you for your feedback.")
+        await update.message.reply_text(
+            f"✅ Ticket created successfully! Thank you for your feedback.\n"
+            f"Ticket ID: `{ticket_id[:8]}`",
+            parse_mode='Markdown'
+        )
         
         # Return to main menu
         reply_keyboard = [["Report a Bug", "View Open Tickets"]]
@@ -200,6 +257,65 @@ async def input_issue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     context.user_data.clear()
     return ConversationHandler.END
 
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show ticket statistics (admin only)"""
+    user = update.message.from_user
+    if user.username != "amfares13":
+        await update.message.reply_text("⛔ You are not authorized to view statistics.")
+        return ConversationHandler.END
+    
+    driver = get_db_driver()
+    
+    try:
+        with driver.session() as session:
+            # Get overall stats
+            overall_query = """
+            MATCH (t:Ticket)
+            WITH count(t) as total
+            MATCH (open:Ticket {status: 'Open'})
+            WITH total, count(open) as open_count
+            MATCH (closed:Ticket {status: 'Closed'})
+            RETURN total, open_count, count(closed) as closed_count
+            """
+            overall = session.run(overall_query).single()
+            total = overall['total'] if overall else 0
+            open_count = overall['open_count'] if overall else 0
+            closed_count = overall['closed_count'] if overall else 0
+            
+            # Get feature breakdown
+            feature_query = """
+            MATCH (t:Ticket)
+            RETURN t.feature as feature, count(t) as count
+            ORDER BY count DESC
+            """
+            features = session.run(feature_query)
+            feature_counts = {record['feature']: record['count'] for record in features}
+            
+            # Get user count
+            user_query = "MATCH (u:User) RETURN count(u) as user_count"
+            user_count = session.run(user_query).single()['user_count']
+        
+        response = "📊 *Ticket Statistics*\n\n"
+        response += f"Total Tickets: {total}\n"
+        response += f"🟢 Open: {open_count}\n"
+        response += f"🔴 Closed: {closed_count}\n"
+        response += f"👥 Users: {user_count}\n\n"
+        
+        if feature_counts:
+            response += "*By Feature:*\n"
+            for feature, count in sorted(feature_counts.items(), key=lambda x: x[1], reverse=True):
+                response += f"• {feature}: {count}\n"
+        
+        await update.message.reply_text(response, parse_mode='Markdown')
+        
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        await update.message.reply_text("❌ Error retrieving statistics.")
+    finally:
+        driver.close()
+    
+    return ConversationHandler.END
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
     await update.message.reply_text(
@@ -213,6 +329,7 @@ def main() -> None:
     # Create the Application and pass it your bot's token.
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
+        logger.error("Error: TELEGRAM_BOT_TOKEN not found in .env")
         print("Error: TELEGRAM_BOT_TOKEN not found in .env")
         return
 
@@ -220,7 +337,10 @@ def main() -> None:
 
     # Add conversation handler with the states SELECT_FEATURE and INPUT_ISSUE
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("report", report_bug_start), MessageHandler(filters.Regex("^Report a Bug$"), report_bug_start)],
+        entry_points=[
+            CommandHandler("report", report_bug_start), 
+            MessageHandler(filters.Regex("^Report a Bug$"), report_bug_start)
+        ],
         states={
             SELECT_FEATURE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_feature)],
             INPUT_ISSUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_issue)],
@@ -229,9 +349,13 @@ def main() -> None:
     )
 
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(MessageHandler(filters.Regex("^View Open Tickets$"), view_tickets))
     application.add_handler(conv_handler)
 
+    logger.info("🚀 Bot starting with Neo4j database...")
+    logger.info(f"📊 Database URI: {URI}")
+    
     # Run the bot until the user presses Ctrl-C
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
