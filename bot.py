@@ -1,6 +1,7 @@
 import os
 import logging
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.helpers import mention_html
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -136,12 +137,13 @@ async def view_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 f"📊 Stats: {total} total tickets, {open_count} open"
             )
         else:
-            response = f"📋 *Open Tickets* ({len(tickets)} of {open_count}):\n\n"
+            response = f"📋 <b>Open Tickets</b> ({len(tickets)} of {open_count}):\n\n"
+            
             for t in tickets:
                 date_str = t['created_at'].split("T")[0] if t.get('created_at') else "N/A"
                 course = f" [{t['course_code']}]" if t.get('course_code') else ""
                 
-                # Display username with @ for easy contact, or create clickable link for users without username
+                # Display username with @ for easy contact, or create clickable mention for users without username
                 username = t.get('username')
                 user_id = t.get('user_id')
                 first_name = t.get('first_name', 'User')
@@ -149,16 +151,16 @@ async def view_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 if username:
                     user_display = f"@{username}"
                 elif user_id:
-                    # Create a clickable link using tg://user?id=USER_ID format
-                    user_display = f"[{first_name}](tg://user?id={user_id})"
+                    # Create a clickable user mention using mention_html helper
+                    user_display = mention_html(user_id, first_name)
                 else:
                     user_display = "Unknown User"
                 
-                response += f"🔹 *{t['feature']}*{course}\n"
+                response += f"🔹 <b>{t['feature']}</b>{course}\n"
                 response += f"   {t['description']}\n"
-                response += f"   _By {user_display} on {date_str}_\n\n"
+                response += f"   <i>By {user_display} on {date_str}</i>\n\n"
             
-            await update.message.reply_text(response, parse_mode='Markdown')
+            await update.message.reply_text(response, parse_mode='HTML')
             
     except Exception as e:
         logger.error(f"Error fetching tickets: {e}")
