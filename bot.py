@@ -108,11 +108,10 @@ async def view_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     
     # Get open tickets
     tickets_query = """
-    MATCH (t:Ticket {status: 'Open'})
-    OPTIONAL MATCH (u:User)-[:REPORTED]->(t)
+    MATCH (u:User)-[:REPORTED]->(t:Ticket {status: 'Open'})
     RETURN t.feature AS feature, t.course_code AS course_code, 
            t.description AS description, t.created_at AS created_at,
-           u.username AS username
+           u.username AS username, u.first_name AS first_name
     ORDER BY t.created_at DESC
     LIMIT 10
     """
@@ -139,10 +138,18 @@ async def view_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             for t in tickets:
                 date_str = t['created_at'].split("T")[0] if t.get('created_at') else "N/A"
                 course = f" [{t['course_code']}]" if t.get('course_code') else ""
-                username = t.get('username', 'Unknown')
+                
+                # Display username or first name
+                if t.get('username'):
+                    user_display = f"@{t['username']}"
+                elif t.get('first_name'):
+                    user_display = t['first_name']
+                else:
+                    user_display = "Unknown"
+                
                 response += f"🔹 *{t['feature']}*{course}\n"
                 response += f"   {t['description']}\n"
-                response += f"   _By @{username} on {date_str}_\n\n"
+                response += f"   _By {user_display} on {date_str}_\n\n"
             
             await update.message.reply_text(response, parse_mode='Markdown')
             
