@@ -141,14 +141,18 @@ async def view_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 date_str = t['created_at'].split("T")[0] if t.get('created_at') else "N/A"
                 course = f" [{t['course_code']}]" if t.get('course_code') else ""
                 
-                # Display username with @ for easy contact
+                # Display username with @ for easy contact, or create clickable link for users without username
                 username = t.get('username')
+                user_id = t.get('user_id')
+                first_name = t.get('first_name', 'User')
+                
                 if username:
                     user_display = f"@{username}"
+                elif user_id:
+                    # Create a clickable link using tg://user?id=USER_ID format
+                    user_display = f"[{first_name}](tg://user?id={user_id})"
                 else:
-                    # Fallback to user ID if no username
-                    user_id = t.get('user_id', 'Unknown')
-                    user_display = f"User ID: {user_id}"
+                    user_display = "Unknown User"
                 
                 response += f"🔹 *{t['feature']}*{course}\n"
                 response += f"   {t['description']}\n"
